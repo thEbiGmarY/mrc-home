@@ -1,2 +1,24 @@
-# mrc-home
-this is my home
+目的
+	这个优化要解决的问题就一句话：让网卡不再可能一直停留在 2.4GHz 频段上。因为 2.4GHz 在物理层面就无法达到千兆，跟你办理的宽带套餐有多快没有关系。
+
+
+实现方式
+	脚本是 “BAT 外壳 + PowerShell 干活” 的组合，因为改驱动属性这件事 cmd 本身做不到。
+	提权：先用 WindowsPrincipal.IsInRole(Administrator) 判断当前身份，不满足就 Start-Process -Verb RunAs 以管理员权限重新启动自己，并带上 elev 参数；这样第二次进入脚本时会跳过提权分支，不会反复弹出 UAC。
+
+	找网卡：用 Get-NetAdapter -Physical 筛选 PhysicalMediaType = Native 802.11 的设备，得到设备名（你这边是 WLAN）。
+	改首选频带：这里用 Set-NetAdapterAdvancedProperty，它本质上等同于在设备管理器 → 网卡属性 → 高级 选项卡里点选。之所以没有直接写死，是因各厂商的驱动命名完全不一样：MT7922 是 PreferredBand /“首选频带”，Intel 是 “Preferred Band”，有些 Realtek 是 “Band Selection”。所以脚本会枚举属性名，再读该属性的合法取值列表，从中挑出含 “5” 且排除 6GHz、2.4GHz 的那一项（你这台机器解析到的是 3. 首选 5GHz 频带），最后按取值名写入。
+	关节能：Set-NetAdapterPowerManagement -AllowComputerToTurnOffDevice Disabled，等同取消 “允许计算机关闭此设备以节约电源” 这个勾选。如果该驱动不支持这个接口，就回退到把适配器类注册表键下的 PnPCapabilities 置为 0x18（24），效果一样。
+生效与复测：参数要等下次关联才被读取，所以脚本执行 netsh wlan disconnect → connect 一次，然后再采集一次频带、信道、接收速率。
+
+
+原理
+	2.4GHz 跑不满千兆的原因在于频宽，并非 “信号差”。2.4GHz 只有 1/6/11 三个不重叠信道，塞不下 80MHz 或 160MHz 的频宽；5GHz 才有空间。
+千兆宽带要跑满，链路速率必须显著高于 1000Mbps，才能抵消协议开销；2.4GHz 的上限，从计算上看就不可能达到。你现在这条 2402 Mbps 就是 5GHz + 160MHz + 2×2 的组合。
+
+**“首选频带” 的机制**：它是驱动漫游决策里的权重项，并不调整发射功率或调制方式。当同一个 SSID 同时广播 2.4G 和 5G 时，驱动按这个偏好优先关联 5GHz 的 BSS；驱动如果能读到更强的 2.4G 信号，默认更容易先连上 2.4G。
+
+**节能项的影响**：勾选后，NDIS 允许系统把网卡挂进低功耗状态、并让驱动降低占空比，表现是延迟抖动变大、突发吞吐掉档。取消后网卡不会因为 “空闲” 被降功率。
+
+局限
+	它不是 “提速开关”。如果 5GHz 信号偏弱（RSSI 低于 −70dBm）、路由器只有 80MHz 频宽、或者瓶颈在光猫或路由 LAN 口、网线，那改完也不会有提升。
